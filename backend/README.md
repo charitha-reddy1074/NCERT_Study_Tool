@@ -1,6 +1,6 @@
 # NCERT Class 6 Intelligent Study Assistant Backend
 
-This backend provides the AI layer for the Next.js frontend using FastAPI, LangChain, Chroma, Hugging Face embeddings, and local Ollama models.
+This backend provides the AI layer for the Next.js frontend using FastAPI, LangChain, Google GenAI embeddings, Chroma Cloud or local Chroma, and local Ollama or Gemini generation models.
 
 ## What it does
 
@@ -33,6 +33,8 @@ backend/data/ncert/class-6/science/food-where-does-it-come-from/notes.pdf
 ## Environment variables
 
 Copy `backend/.env.example` to `backend/.env` and adjust values if needed.
+
+If you want Google embeddings plus Chroma Cloud, set `GOOGLE_API_KEY`, `GOOGLE_EMBEDDING_MODEL`, `CHROMA_TENANT`, `CHROMA_DATABASE`, and `CHROMA_API_KEY` in `backend/.env`.
 
 ## Run locally
 

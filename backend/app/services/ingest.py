@@ -52,6 +52,24 @@ class IngestService:
         if payload.clear_existing:
             self.vectorstore.reset()
 
+        # Cache short-circuit for chapter-scoped lazy ingestion.
+        if not payload.clear_existing and requested_subject and requested_chapter:
+            if self.vectorstore.has_documents(
+                filter={
+                    "class_num": payload.class_num,
+                    "subject": requested_subject,
+                    "chapter": requested_chapter,
+                }
+            ):
+                return IngestResponse(
+                    source_dir=str(source_dir),
+                    files_processed=0,
+                    chunks_indexed=0,
+                    collection_size=self.vectorstore.count_documents(),
+                    skipped_files=[],
+                    note="Chapter already indexed in cache.",
+                )
+
         supported_files = sorted(
             path for path in source_dir.rglob("*") if path.is_file() and path.suffix.lower() in SUPPORTED_TEXT_EXTENSIONS
         )
@@ -193,6 +211,9 @@ class IngestService:
                         metadata["topic"] = block.heading_path[1]
                     if len(block.heading_path) > 2:
                         metadata["subtopic"] = block.heading_path[2]
+                    exercise_section = self._exercise_section_for_path(block.heading_path)
+                    if exercise_section:
+                        metadata["exercise_section"] = exercise_section
                     chunk_documents.append(Document(page_content=enriched_text, metadata=metadata))
 
         return chunk_documents
@@ -491,9 +512,11 @@ class IngestService:
                 try:
                     chunk_text = self._tiktoken_encoding.decode(chunk_tokens)
                 except Exception:
-                    # decoding might fail on partial tokens; fallback to joining approx
-                    chunk_text = text
-                chunks.append(chunk_text)
+                    # If a tiny window fails to decode, skip it rather than appending
+                    # the full source text as a chunk (which pollutes retrieval).
+                    continue
+                if chunk_text.strip():
+                    chunks.append(chunk_text)
             return chunks
         except Exception:
             return [chunk.strip() for chunk in self._fallback_splitter.split_text(text) if chunk.strip()]
@@ -554,3 +577,10 @@ class IngestService:
             ]
         )
         return hashlib.sha1(raw_value.encode("utf-8")).hexdigest()
+
+    def _exercise_section_for_path(self, heading_path: list[str]) -> str | None:
+        for heading in reversed(heading_path):
+            lowered = heading.strip().lower()
+            if "exercise" in lowered or "review questions" in lowered or "activities" in lowered:
+                return heading
+        return None

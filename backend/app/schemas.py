@@ -14,6 +14,7 @@ class HealthResponse(BaseModel):
     documents_indexed: int
     ollama_base_url: str
     ollama_model: str
+    generation_model: str
     embedding_model_name: str
 
 
@@ -36,6 +37,8 @@ class SourceCitation(BaseModel):
     chunk_id: int | None = None
     relevance_score: float | None = None
     excerpt: str | None = None
+    topic: str | None = None
+    exercise_section: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -57,6 +60,15 @@ class ChatResponse(BaseModel):
     not_in_textbook: bool = False
     retrieved_documents: int = 0
     source_scope: str | None = None
+
+
+class ChapterSummaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    class_num: int = Field(default=6, ge=1, le=12)
+    subject: str | None = None
+    chapter: str | None = None
+    top_k: int = Field(default=6, ge=1, le=12)
 
 
 class FlashcardRequest(BaseModel):

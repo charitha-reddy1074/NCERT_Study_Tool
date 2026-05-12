@@ -2,6 +2,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
+from langchain_core.documents import Document
 from app.core.config import Settings
 from app.schemas import QuizItem, QuizOption
 from app.services.rag import RagService
@@ -185,6 +186,51 @@ class TestCombinedDedupAndDifficulty:
         assert len(result) == 2
         # Should prefer medium, then medium (no duplicates)
         assert result[0].question == "Why does photosynthesis matter?"
+
+
+class TestFallbackGeneration:
+    """Tests for deterministic fallbacks used when the local model returns bad JSON."""
+
+    def test_normalize_quiz_options_pads_without_question_name_error(self, rag_service):
+        result = rag_service._normalize_quiz_options(["Correct option"], "mcq", "What is the concept?")
+
+        assert len(result) == 4
+        assert [option.label for option in result] == ["A", "B", "C", "D"]
+        assert result[0].text == "Correct option"
+
+    def test_flashcard_fallback_uses_context_sentences(self, rag_service):
+        docs = [
+            Document(
+                page_content=(
+                    "Plants need water and sunlight to grow. "
+                    "Roots absorb water from the soil. "
+                    "Leaves prepare food for the plant."
+                )
+            )
+        ]
+
+        result = rag_service._fallback_flashcards(docs, 2)
+
+        assert len(result) == 2
+        assert all(card.front for card in result)
+        assert all(card.back for card in result)
+
+    def test_quiz_fallback_does_not_copy_qa_question_verbatim(self, rag_service):
+        docs = [
+            Document(
+                page_content=(
+                    "Q. What do roots absorb?\n"
+                    "Ans. Roots absorb water from the soil."
+                )
+            )
+        ]
+
+        result = rag_service._fallback_quiz(docs, 1, "mcq", "medium", False)
+
+        assert len(result) == 1
+        assert result[0].question != "What do roots absorb?"
+        assert result[0].question.startswith("Which option correctly answers")
+        assert len(result[0].options) == 4
 
 
 if __name__ == "__main__":

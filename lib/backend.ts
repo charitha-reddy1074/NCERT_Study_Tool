@@ -43,6 +43,8 @@ export type ChatResponse = {
   source_scope?: string | null
 }
 
+export type ChapterSummaryResponse = ChatResponse
+
 export type FlashcardItem = {
   front: string
   back: string
@@ -137,6 +139,21 @@ export async function askQuestion(payload: {
     body: JSON.stringify({
       top_k: 6,
       chat_history: [],
+      ...payload,
+    }),
+  })
+}
+
+export async function generateChapterSummary(payload: {
+  class_num: number
+  subject?: string | null
+  chapter?: string | null
+  top_k?: number
+}): Promise<ChapterSummaryResponse> {
+  return requestJson<ChapterSummaryResponse>('/api/v1/summary', {
+    method: 'POST',
+    body: JSON.stringify({
+      top_k: 6,
       ...payload,
     }),
   })

@@ -82,7 +82,7 @@ export default function Page() {
           class_num: Number(classNum),
           subject: selectedSubject,
           chapter: chapter,
-          clear_existing: true,
+          clear_existing: false,
         })
       } catch (error) {
         if (!isMounted) return

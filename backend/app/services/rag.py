@@ -29,11 +29,55 @@ from app.services.llm import build_chat_model
 from app.services.vectorstore import VectorStoreService
 
 
-SYSTEM_PROMPT = """You are the NCERT Class 6 Intelligent Study Assistant.
-You must answer using only the official NCERT textbook context supplied to you.
-If the answer is not available in the provided context, say that clearly and do not invent facts.
-Keep the language clear, student-friendly, and accurate.
-Always cite only the provided sources. Never mention unsupported external knowledge.
+SYSTEM_PROMPT = """You are the NCERT Intelligent Study Assistant for Indian school students.
+
+Your role is to generate accurate educational content strictly from the provided NCERT textbook context.
+
+CORE RULES:
+1. Use ONLY the provided textbook context.
+2. Never use outside knowledge, assumptions, or fabricated facts.
+3. If information is missing or incomplete, explicitly say:
+    "The provided NCERT context does not contain enough information."
+4. Keep explanations student-friendly, concise, and educational.
+5. Preserve scientific, mathematical, and factual correctness.
+6. Never generate unsupported formulas, definitions, examples, or values.
+7. Prioritize clarity over complexity.
+8. When multiple retrieved chunks overlap, combine them carefully without repetition.
+9. Maintain chapter consistency:
+    - Do not mix concepts from unrelated chapters.
+    - Keep terminology aligned with NCERT wording.
+10. Output must strictly follow the requested format.
+11. Never include markdown code fences unless explicitly requested.
+12. Never explain your reasoning process.
+13. For Mathematics:
+    - Prefer step-by-step solutions.
+    - Preserve equations exactly.
+    - Avoid arithmetic mistakes.
+14. For Science:
+    - Preserve definitions and processes accurately.
+15. For Social Science:
+    - Keep dates, events, and terminology exact.
+16. For Language subjects:
+    - Keep interpretations grounded in the provided text only.
+"""
+
+CHAPTER_SUMMARY_PROMPT = """Create a concise chapter summary from the provided NCERT context.
+
+Official NCERT textbook context:
+{context}
+
+Instructions:
+1. Use ONLY the provided context.
+2. Summarize the main ideas in 5-8 bullet points or short paragraphs.
+3. Capture definitions, key steps, important terms, and relationships.
+4. Do not add facts that are not present in the context.
+5. If the context is incomplete, say:
+    "The provided NCERT context does not contain enough information."
+6. Keep the summary student-friendly and chapter-consistent.
+7. Avoid repetition.
+8. If an exercise section is present, mention it briefly as a practice focus rather than copying questions.
+
+Return plain text only.
 """
 
 
@@ -67,18 +111,30 @@ class RagService:
         history = self._format_history(payload.chat_history)
         prompt = f"""{SYSTEM_PROMPT}
 
-Conversation history:
-{history}
+    Conversation history:
+    {history}
 
-Official NCERT context:
-{context}
+    Official NCERT textbook context:
+    {context}
 
-Student question:
-{payload.question}
+    Student question:
+    {payload.question}
 
-Answer in 3 to 6 short paragraphs or bullet points. If the context is insufficient, say so explicitly.
-Return plain text only.
-"""
+    Instructions:
+    1. Answer ONLY using the provided NCERT context.
+    2. If the answer is partially available, answer only the supported parts.
+    3. If the answer is unavailable, clearly say:
+       "The provided NCERT context does not contain enough information."
+    4. Keep the response concise, clear, and student-friendly.
+    5. Prefer bullet points when explaining multiple ideas.
+    6. Avoid repeating textbook sentences verbatim unless necessary.
+    7. For maths/science:
+       - explain steps clearly
+       - preserve formulas exactly
+    8. Keep the answer between 80 and 220 words.
+
+    Return plain text only.
+    """
 
         try:
             answer = self.chat_model.invoke(prompt).content.strip()
@@ -110,30 +166,64 @@ Return plain text only.
         context = self._format_context(bundle.documents)
         prompt = f"""{SYSTEM_PROMPT}
 
-Create exactly {payload.count} flashcards from the official NCERT context below.
-Use only the provided context.
-If the context is limited, produce the best possible set without inventing facts.
-Return valid JSON with this shape:
-{{
-  "flashcards": [
-    {{"front": "...", "back": "...", "explanation": "..."}}
-  ],
-  "notes": ["..."]
-}}
+Create exactly {payload.count} high-quality flashcards from the provided NCERT context.
 
-Official NCERT context:
+Official NCERT textbook context:
 {context}
 
 Topic focus:
-{payload.focus_area or "Whole chapter"}
+{payload.focus_area or "Entire chapter"}
+
+Instructions:
+1. Use ONLY the provided context.
+2. Prioritize:
+     - definitions
+     - formulas
+     - important concepts
+     - cause-effect relationships
+     - keywords
+3. Make each flashcard short, clear, and revision-friendly.
+4. Avoid duplicate concepts.
+5. Keep explanations simple for Class-level understanding.
+6. If context is limited, generate fewer-depth cards instead of inventing information.
+7. Front side should test recall.
+8. Back side should contain the precise answer.
+9. Explanation should clarify understanding in 1-2 sentences.
+
+Return STRICT valid JSON only.
+
+Schema:
+{{
+    "flashcards": [
+        {{
+            "front": "Question or keyword",
+            "back": "Short answer",
+            "explanation": "Simple explanation"
+        }}
+    ],
+    "notes": [
+        "Important revision note"
+    ]
+}}
 """
 
         try:
-            parsed = self._invoke_json(prompt, timeout_seconds=20)
+            parsed = self._invoke_json(prompt, timeout_seconds=35)
         except Exception:
             parsed = {}
-        flashcards = [FlashcardItem.model_validate(item) for item in parsed.get("flashcards", [])]
+        flashcards = []
+        for item in parsed.get("flashcards", []):
+            try:
+                flashcard = FlashcardItem.model_validate(item)
+            except Exception:
+                continue
+            if flashcard.front.strip() and flashcard.back.strip():
+                flashcards.append(flashcard)
+        if not flashcards:
+            flashcards = self._fallback_flashcards(bundle.documents, payload.count)
         notes = [str(note) for note in parsed.get("notes", [])]
+        if flashcards and not parsed.get("flashcards"):
+            notes.append("Generated from retrieved NCERT context because the local model did not return valid flashcard JSON.")
         return FlashcardResponse(
             flashcards=flashcards,
             citations=bundle.citations,
@@ -166,21 +256,55 @@ Topic focus:
         )
         prompt = f"""{SYSTEM_PROMPT}
 
-Create exactly {payload.count} important questions with answers from the official NCERT context.
-Priority rule: pick questions from the end-of-chapter exercise section of the selected chapter.
-If the exercise section is partially available, use only whatever is available there before using any other chapter text.
-Every question and answer must be grounded in the provided context. Do not invent values, facts, or formulas.
-{math_instruction}
-Return valid JSON with this shape:
-{{
-  "questions": [
-    {{"question": "...", "answer": "...", "explanation": "...", "difficulty": "easy|medium|hard"}}
-  ],
-  "notes": ["..."]
-}}
+Create exactly {payload.count} important study questions with answers from the provided NCERT context.
 
-Official NCERT context:
+Official NCERT textbook context:
 {context}
+
+Instructions:
+1. Use ONLY the provided context.
+2. PRIORITY ORDER:
+     a) End-of-chapter exercises
+     b) Important definitions
+     c) Concept explanations
+     d) Examples and applications
+3. Do not invent questions unsupported by context.
+4. Questions should test:
+     - understanding
+     - application
+     - reasoning
+     - concept clarity
+5. Avoid duplicate or trivial questions.
+6. Answers must be concise but complete.
+7. Explanations should improve conceptual understanding.
+8. Difficulty distribution:
+     - 40% easy
+     - 40% medium
+     - 20% hard
+9. For Mathematics:
+     - 70% problem-solving
+     - 30% conceptual
+     - include step-by-step solutions when needed
+10. Preserve formulas and units exactly.
+
+{math_instruction}
+
+Return STRICT valid JSON only.
+
+Schema:
+{{
+    "questions": [
+        {{
+            "question": "Question text",
+            "answer": "Correct answer",
+            "explanation": "Concept explanation",
+            "difficulty": "easy|medium|hard"
+        }}
+    ],
+    "notes": [
+        "Important study note"
+    ]
+}}
 """
 
         try:
@@ -225,31 +349,63 @@ Official NCERT context:
         # Force MCQ-only generation for all subjects
         prompt = f"""{SYSTEM_PROMPT}
 
-Create exactly {payload.count} multiple choice quiz questions (MCQs only) from the official NCERT context.
-Difficulty: {payload.difficulty}
-Priority rule: source questions from the end-of-chapter exercise section of the selected chapter.
-Every question must be answerable from the provided context only.
-{math_instruction}
-Return valid JSON with this shape:
-{{
-  "quiz_title": "...",
-  "questions": [
-    {{
-      "question": "...",
-      "question_type": "mcq",
-      "options": [{{"label": "A", "text": "..."}}, {{"label": "B", "text": "..."}}, {{"label": "C", "text": "..."}}, {{"label": "D", "text": "..."}}],
-      "correct_answer": "...",
-      "explanation": "...",
-      "difficulty": "easy|medium|hard"
-    }}
-  ],
-  "notes": ["..."]
-}}
+Create exactly {payload.count} multiple-choice questions from the provided NCERT context.
 
-Ensure all questions have exactly four options labeled A, B, C, and D with one correct answer.
-
-Official NCERT context:
+Official NCERT textbook context:
 {context}
+
+Difficulty level:
+{payload.difficulty}
+
+Instructions:
+1. Use ONLY the provided NCERT context.
+2. Priority source:
+     - end-of-chapter exercises
+     - key concepts
+     - definitions
+     - examples
+3. Do NOT copy textbook questions verbatim.
+4. Convert textbook ideas into assessment-style MCQs.
+5. Every question must:
+     - test understanding
+     - have exactly 4 options
+     - contain only 1 correct answer
+6. Distractors should be believable but clearly incorrect.
+7. Avoid ambiguous wording.
+8. Explanations must justify why the correct answer is right.
+9. Maintain NCERT terminology.
+10. For Mathematics:
+     - prioritize numerical/problem-solving MCQs
+     - preserve formulas exactly
+11. Difficulty distribution should match:
+     {payload.difficulty}
+
+{math_instruction}
+
+Return STRICT valid JSON only.
+
+Schema:
+{{
+    "quiz_title": "Chapter quiz title",
+    "questions": [
+        {{
+            "question": "Question text",
+            "question_type": "mcq",
+            "options": [
+                {{"label": "A", "text": "Option A"}},
+                {{"label": "B", "text": "Option B"}},
+                {{"label": "C", "text": "Option C"}},
+                {{"label": "D", "text": "Option D"}}
+            ],
+            "correct_answer": "A",
+            "explanation": "Why the answer is correct",
+            "difficulty": "easy|medium|hard"
+        }}
+    ],
+    "notes": [
+        "Important revision note"
+    ]
+}}
 """
 
         try:
@@ -287,6 +443,41 @@ Official NCERT context:
             not_in_textbook=bundle.not_in_textbook and not questions,
         )
 
+    def summarize_chapter(self, class_num: int, subject: str | None, chapter: str | None, top_k: int) -> ChatResponse:
+        bundle = self._retrieve(
+            class_num,
+            subject,
+            chapter,
+            "Chapter summary, key ideas, important concepts, and exercise overview from this NCERT chapter.",
+            top_k,
+        )
+        if not bundle.documents:
+            return ChatResponse(
+                answer="The provided NCERT context does not contain enough information.",
+                citations=[],
+                not_in_textbook=True,
+                retrieved_documents=0,
+                source_scope=bundle.scope,
+            )
+
+        context = self._format_context(bundle.documents)
+        prompt = CHAPTER_SUMMARY_PROMPT.format(context=context)
+        try:
+            summary = self.chat_model.invoke(prompt).content.strip()
+        except Exception as exc:
+            summary = f"The provided NCERT context does not contain enough information. {exc}"
+
+        if not summary:
+            summary = "The provided NCERT context does not contain enough information."
+
+        return ChatResponse(
+            answer=summary,
+            citations=bundle.citations,
+            not_in_textbook=bundle.not_in_textbook,
+            retrieved_documents=len(bundle.documents),
+            source_scope=bundle.scope,
+        )
+
     def _retrieve(self, class_num: int, subject: str | None, chapter: str | None, query: str, top_k: int) -> RetrievedBundle:
         metadata_filter: dict[str, object] = {"class_num": class_num}
         if subject:
@@ -320,6 +511,10 @@ Official NCERT context:
                 title_bits.append(f"subject={metadata['subject']}")
             if metadata.get("chapter"):
                 title_bits.append(f"chapter={metadata['chapter']}")
+            if metadata.get("topic"):
+                title_bits.append(f"topic={metadata['topic']}")
+            if metadata.get("exercise_section"):
+                title_bits.append(f"exercise_section={metadata['exercise_section']}")
             if metadata.get("page") is not None:
                 title_bits.append(f"page={metadata['page']}")
             header = "; ".join(title_bits)
@@ -368,6 +563,8 @@ Official NCERT context:
             chunk_id=self._safe_int(metadata.get("chunk_id")),
             relevance_score=float(score),
             excerpt=document.page_content[:350].strip(),
+            topic=str(metadata.get("topic", "")) or None,
+            exercise_section=str(metadata.get("exercise_section", "")) or None,
         )
 
     def _coerce_quiz_item(self, item: dict, default_type: str, default_difficulty: str) -> QuizItem:
@@ -375,7 +572,8 @@ Official NCERT context:
         if default_type == "mcq":
             question_type = "mcq"
         raw_options = item.get("options", [])
-        options = self._normalize_quiz_options(raw_options, question_type)
+        question_text = str(item.get("question", "")).strip()
+        options = self._normalize_quiz_options(raw_options, question_type, question_text)
         difficulty = self._normalize_difficulty(item.get("difficulty"), default_difficulty)
 
         correct_answer = str(item.get("correct_answer", "")).strip()
@@ -413,7 +611,7 @@ Official NCERT context:
                     correct_answer = matched_label
 
         return QuizItem(
-            question=str(item.get("question", "")).strip(),
+            question=question_text,
             question_type=question_type,  # type: ignore[arg-type]
             options=options,
             correct_answer=correct_answer,
@@ -477,6 +675,35 @@ Official NCERT context:
             )
         return questions[:count]
 
+    def _fallback_flashcards(self, documents: list[Document], count: int) -> list[FlashcardItem]:
+        flashcards: list[FlashcardItem] = []
+
+        for question_text, answer_text in self._extract_exercise_pairs(documents):
+            if len(flashcards) >= count:
+                return flashcards
+            flashcards.append(
+                FlashcardItem(
+                    front=self._trim_text(question_text, 140),
+                    back=self._trim_text(answer_text, 180),
+                    explanation="Based on the selected NCERT chapter context.",
+                )
+            )
+
+        for line in self._first_context_sentences(documents, count * 2):
+            if len(flashcards) >= count:
+                break
+            if self._is_duplicate_text(line, [card.front for card in flashcards]):
+                continue
+            flashcards.append(
+                FlashcardItem(
+                    front=f"What is the key idea in this NCERT line: {self._trim_text(line, 100)}?",
+                    back=self._trim_text(line, 180),
+                    explanation="This card was generated directly from the retrieved textbook context.",
+                )
+            )
+
+        return flashcards[:count]
+
     def _fallback_quiz(self, documents: list[Document], count: int, quiz_type: str, difficulty: str, is_math: bool) -> list[QuizItem]:
         pairs = self._extract_exercise_pairs(documents)
         questions: list[QuizItem] = []
@@ -492,7 +719,7 @@ Official NCERT context:
 
             questions.append(
                 QuizItem(
-                    question=question_text,
+                    question=self._quiz_stem_from_pair(question_text, answer_text),
                     question_type=question_type,  # type: ignore[arg-type]
                     options=options,
                     correct_answer=correct_answer,
@@ -520,6 +747,13 @@ Official NCERT context:
                 )
             )
         return questions[:count]
+
+    def _quiz_stem_from_pair(self, question_text: str, answer_text: str) -> str:
+        question = self._trim_text(question_text, 120).rstrip("?.")
+        answer = self._trim_text(answer_text, 80).rstrip(".")
+        if answer:
+            return f"Which option correctly answers this NCERT prompt: {question}?"
+        return f"Which option best matches this NCERT concept: {question}?"
 
     def _extract_exercise_pairs(self, documents: list[Document]) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
@@ -635,7 +869,7 @@ Official NCERT context:
             return "False"
         return "True"
 
-    def _normalize_quiz_options(self, raw_options: object, question_type: str) -> list[QuizOption]:
+    def _normalize_quiz_options(self, raw_options: object, question_type: str, question_text: str = "") -> list[QuizOption]:
         if question_type != "mcq":
             return []
         options: list[QuizOption] = []
@@ -721,6 +955,18 @@ Official NCERT context:
             labeled.append(QuizOption(label=["A", "B", "C", "D"][len(labeled)], text=f"A similar but incorrect option {len(labeled) + 1}"))
 
         return self._dedupe_and_relabel_options(labeled)
+
+    def _trim_text(self, text: str, max_length: int) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text)).strip()
+        if len(cleaned) <= max_length:
+            return cleaned
+        return cleaned[: max_length - 1].rstrip() + "..."
+
+    def _is_duplicate_text(self, text: str, existing: list[str]) -> bool:
+        key = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+        if not key:
+            return True
+        return any(re.sub(r"[^a-z0-9]+", " ", item.lower()).strip() == key for item in existing)
 
     def _clean_option_text(self, text: str) -> str:
         cleaned = str(text).strip()

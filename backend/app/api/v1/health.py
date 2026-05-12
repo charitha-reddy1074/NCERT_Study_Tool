@@ -16,5 +16,6 @@ async def health(request: Request) -> HealthResponse:
         documents_indexed=container.vectorstore.count_documents(),
         ollama_base_url=container.settings.ollama_base_url,
         ollama_model=container.settings.ollama_model,
-        embedding_model_name=container.settings.embedding_model_name,
+        generation_model=container.settings.gemini_model,
+        embedding_model_name=container.settings.google_embedding_model if container.settings.google_api_key else container.settings.embedding_model_name,
     )

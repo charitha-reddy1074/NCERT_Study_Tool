@@ -32,8 +32,21 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5:1.5b"
     quiz_ollama_model: str = "qwen2.5:1.5b"
     math_ollama_model: str = "deepseek-r1:8b"
+    gemini_model: str = "gemini-2.5-flash"
+    google_api_key: str | None = None
 
+    # Local embedding fallback used only when Google embeddings are unavailable.
     embedding_model_name: str = "nomic-embed-text"
+    google_embedding_model: str = "gemini-embedding-2"
+
+    # Chroma Cloud credentials. Leave unset to keep using the local persistent store.
+    chroma_tenant: str | None = None
+    chroma_database: str | None = None
+    chroma_api_key: str | None = None
+    chroma_cloud_host: str = "api.trychroma.com"
+    chroma_cloud_port: int = 443
+    chroma_cloud_enable_ssl: bool = True
+
     chroma_persist_dir: Path = BASE_DIR / "storage/chroma"
     ncert_data_dir: Path = BASE_DIR / "data/ncert"
 

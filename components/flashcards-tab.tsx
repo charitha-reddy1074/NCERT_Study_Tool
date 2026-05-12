@@ -36,6 +36,11 @@ export default function FlashcardsTab({ classNum, subject, chapter }: Flashcards
         chapter: chapter || null,
         count: numCards,
       })
+      if (response.flashcards.length === 0) {
+        setError('No flashcards were generated for this selection. Try another chapter or ingest the textbook content again.')
+        setGenerated(false)
+        return
+      }
       setCards(response.flashcards)
       setNotes(response.notes)
       setGenerated(true)

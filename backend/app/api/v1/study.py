@@ -3,6 +3,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.core.deps import get_container
 from app.schemas import (
+    ChapterSummaryRequest,
     CatalogResponse,
     ChatRequest,
     ChatResponse,
@@ -29,6 +30,12 @@ async def catalog(request: Request, class_num: int = 6) -> CatalogResponse:
 async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     container = get_container(request)
     return await run_in_threadpool(container.rag.answer_question, payload)
+
+
+@router.post("/summary", response_model=ChatResponse)
+async def chapter_summary(request: Request, payload: ChapterSummaryRequest) -> ChatResponse:
+    container = get_container(request)
+    return await run_in_threadpool(container.rag.summarize_chapter, payload.class_num, payload.subject, payload.chapter, payload.top_k)
 
 
 @router.post("/flashcards", response_model=FlashcardResponse)
