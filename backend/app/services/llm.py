@@ -1,13 +1,36 @@
-from google import genai
-from langchain_core.embeddings import Embeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_ollama import ChatOllama, OllamaEmbeddings
+try:
+    from langchain_core.embeddings import Embeddings
+except Exception:  # pragma: no cover - optional dependency
+    class Embeddings:  # type: ignore[no-redef]
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:  # pragma: no cover - interface fallback
+            raise NotImplementedError
+
+        def embed_query(self, text: str) -> list[float]:  # pragma: no cover - interface fallback
+            raise NotImplementedError
+
+try:
+    from langchain_ollama import ChatOllama, OllamaEmbeddings
+except Exception:  # pragma: no cover - optional dependency
+    class OllamaEmbeddings:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError("langchain-ollama is not installed")
+
+    class ChatOllama:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            raise RuntimeError("langchain-ollama is not installed")
 
 from app.core.config import Settings
+
+try:
+    from google import genai
+except Exception:  # pragma: no cover - optional dependency
+    genai = None
 
 
 class GoogleGenAIEmbeddings(Embeddings):
     def __init__(self, *, api_key: str, model: str) -> None:
+        if genai is None:
+            raise RuntimeError("google-genai is not installed, so Google embeddings cannot be used")
         self._client = genai.Client(api_key=api_key)
         self._model = model
 
@@ -67,6 +90,8 @@ def build_chat_model(settings: Settings, model_name: str | None = None, *, num_p
     generation path in configured environments.
     """
     if settings.google_api_key:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
         return ChatGoogleGenerativeAI(
             model=model_name or settings.gemini_model,
             temperature=0.2,

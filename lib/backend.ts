@@ -49,6 +49,9 @@ export type FlashcardItem = {
   front: string
   back: string
   explanation: string
+  type?: 'definition' | 'concept' | 'formula' | 'application' | 'misconception'
+  difficulty?: 'easy' | 'medium' | 'hard'
+  blooms_level?: 'remember' | 'understand' | 'apply'
 }
 
 export type FlashcardResponse = {
@@ -63,6 +66,8 @@ export type QuestionItem = {
   answer: string
   explanation: string
   difficulty: 'easy' | 'medium' | 'hard'
+  type?: 'conceptual' | 'application' | 'HOTS'
+  blooms_level?: 'understand' | 'apply' | 'analyze'
 }
 
 export type QuestionResponse = {
@@ -84,6 +89,7 @@ export type QuizItem = {
   correct_answer: string
   explanation: string
   difficulty: 'easy' | 'medium' | 'hard'
+  blooms_level?: 'remember' | 'understand' | 'apply' | 'analyze'
 }
 
 export type QuizResponse = {

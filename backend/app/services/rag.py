@@ -26,6 +26,7 @@ from app.schemas import (
     SourceCitation,
 )
 from app.services.llm import build_chat_model
+from app.services.retrieval_pipeline import EducationalRetrievalPipeline
 from app.services.vectorstore import VectorStoreService
 
 
@@ -61,23 +62,98 @@ CORE RULES:
     - Keep interpretations grounded in the provided text only.
 """
 
-CHAPTER_SUMMARY_PROMPT = """Create a concise chapter summary from the provided NCERT context.
+CONCEPTUAL_QA_PROMPT = """You are an NCERT expert teacher creating concept-focused questions and answers.
 
-Official NCERT textbook context:
+Generate educationally useful conceptual questions and answers.
+
+IMPORTANT:
+
+* Focus on understanding and application.
+* Do NOT ask vague questions like "What do you understand?" or "Write about the lesson".
+* Avoid story-only questions.
+* Questions should test concepts, reasoning, and applications.
+* Use Bloom taxonomy.
+* Questions must help students learn concepts deeply.
+* Prefer educational clarity over textbook wording.
+* If textbook uses examples, create new conceptual scenarios instead.
+
+QUESTION TYPES:
+
+* conceptual
+* application-based
+* reasoning
+* compare and contrast
+* problem-solving
+* HOTS
+
+OUTPUT FORMAT:
+[
+{{
+"question": "",
+"answer": "",
+"type": "conceptual/application/HOTS",
+"difficulty": "easy/medium/hard",
+"blooms_level": "understand/apply/analyze"
+}}
+]
+
+CONTEXT:
 {context}
+"""
 
-Instructions:
-1. Use ONLY the provided context.
-2. Summarize the main ideas in 5-8 bullet points or short paragraphs.
-3. Capture definitions, key steps, important terms, and relationships.
-4. Do not add facts that are not present in the context.
-5. If the context is incomplete, say:
-    "The provided NCERT context does not contain enough information."
-6. Keep the summary student-friendly and chapter-consistent.
-7. Avoid repetition.
-8. If an exercise section is present, mention it briefly as a practice focus rather than copying questions.
+ASSERTION_REASON_PROMPT = """You are an NCERT exam question creator.
 
-Return plain text only.
+Generate assertion-reason questions that test conceptual understanding.
+
+RULES:
+
+* Assertions must be meaningful.
+* Reasons must test reasoning ability.
+* Avoid trivial factual recall.
+* Avoid copied textbook lines.
+* Questions must test conceptual relationships.
+* Ensure educational correctness.
+
+OUTPUT FORMAT:
+[
+{{
+"assertion": "",
+"reason": "",
+"correct_option": "",
+"explanation": ""
+}}
+]
+
+CONTEXT:
+{context}
+"""
+
+CHAPTER_SUMMARY_PROMPT = """You are an expert NCERT revision teacher.
+
+Generate a concept-focused educational summary.
+
+RULES:
+
+* Focus on concepts and learning outcomes.
+* Avoid storytelling.
+* Avoid unnecessary textbook examples.
+* Organize concepts clearly.
+* Highlight formulas, rules, and important ideas.
+* Use concise educational language.
+* Make summary useful for revision and exams.
+* Preserve NCERT correctness.
+
+OUTPUT FORMAT:
+{{
+"chapter_summary": "",
+"key_concepts": [],
+"important_formulas": [],
+"common_mistakes": [],
+"exam_points": []
+}}
+
+CONTEXT:
+{context}
 """
 
 
@@ -85,6 +161,7 @@ Return plain text only.
 class RetrievedBundle:
     documents: list[Document]
     citations: list[SourceCitation]
+    structured_context: dict[str, list[str]]
     scope: str
     not_in_textbook: bool
 
@@ -95,9 +172,10 @@ class RagService:
         self.vectorstore = vectorstore
         self.chat_model = build_chat_model(settings, num_predict=384)
         self.quiz_chat_model = build_chat_model(settings, model_name=settings.quiz_ollama_model, num_predict=512)
+        self.retrieval_pipeline = EducationalRetrievalPipeline(settings, vectorstore)
 
     def answer_question(self, payload: ChatRequest) -> ChatResponse:
-        bundle = self._retrieve(payload.class_num, payload.subject, payload.chapter, payload.question, payload.top_k)
+        bundle = self._retrieve("conceptual_qa", payload.class_num, payload.subject, payload.chapter, payload.question, payload.top_k)
         if not bundle.documents:
             return ChatResponse(
                 answer="I could not find this in the official NCERT Class 6 textbook corpus.",
@@ -107,14 +185,14 @@ class RagService:
                 source_scope=bundle.scope,
             )
 
-        context = self._format_context(bundle.documents)
+        context = self._format_structured_context(bundle.structured_context, payload.question)
         history = self._format_history(payload.chat_history)
         prompt = f"""{SYSTEM_PROMPT}
 
     Conversation history:
     {history}
 
-    Official NCERT textbook context:
+    Structured NCERT educational context:
     {context}
 
     Student question:
@@ -154,7 +232,7 @@ class RagService:
         )
 
     def generate_flashcards(self, payload: FlashcardRequest) -> FlashcardResponse:
-        bundle = self._retrieve(payload.class_num, payload.subject, payload.chapter, payload.focus_area or "Generate flashcards from the chapter.", payload.top_k)
+        bundle = self._retrieve("flashcards", payload.class_num, payload.subject, payload.chapter, payload.focus_area or "Generate flashcards from the chapter.", payload.top_k)
         if not bundle.documents:
             return FlashcardResponse(
                 flashcards=[],
@@ -163,12 +241,12 @@ class RagService:
                 not_in_textbook=True,
             )
 
-        context = self._format_context(bundle.documents)
+        context = self._format_structured_context(bundle.structured_context, payload.focus_area or "Entire chapter")
         prompt = f"""{SYSTEM_PROMPT}
 
 Create exactly {payload.count} high-quality flashcards from the provided NCERT context.
 
-Official NCERT textbook context:
+Structured NCERT educational context:
 {context}
 
 Topic focus:
@@ -176,19 +254,27 @@ Topic focus:
 
 Instructions:
 1. Use ONLY the provided context.
-2. Prioritize:
-     - definitions
-     - formulas
-     - important concepts
-     - cause-effect relationships
-     - keywords
-3. Make each flashcard short, clear, and revision-friendly.
-4. Avoid duplicate concepts.
-5. Keep explanations simple for Class-level understanding.
-6. If context is limited, generate fewer-depth cards instead of inventing information.
-7. Front side should test recall.
-8. Back side should contain the precise answer.
-9. Explanation should clarify understanding in 1-2 sentences.
+2. Focus on concepts, definitions, formulas, rules, misconceptions, and applications.
+3. Do NOT copy textbook sentences directly.
+4. Do NOT generate story-based flashcards.
+5. Do NOT ask vague prompts like "What did you understand?" or "Explain the lesson".
+6. Prefer conceptual understanding over memorization.
+7. If examples exist in context, abstract the underlying concept instead of repeating the story.
+8. Use simple school-level English and keep every card concise.
+9. Ensure every card helps with revision and exam preparation.
+10. Prioritize these flashcard types:
+     - definition
+     - formula
+     - concept
+     - application
+     - misconception
+11. Front should test recall or understanding.
+12. Back should contain the precise answer.
+13. Explanation should clarify the idea in 1-2 short sentences.
+14. Set type to one of: definition, concept, formula, application, misconception.
+15. Set difficulty to one of: easy, medium, hard.
+16. Set blooms_level to one of: remember, understand, apply.
+17. If the context is limited, prefer fewer but higher-quality flashcards instead of inventing information.
 
 Return STRICT valid JSON only.
 
@@ -196,9 +282,12 @@ Schema:
 {{
     "flashcards": [
         {{
-            "front": "Question or keyword",
+            "front": "Concise question or cue",
             "back": "Short answer",
             "explanation": "Simple explanation"
+            "type": "definition/concept/formula/application/misconception",
+            "difficulty": "easy/medium/hard",
+            "blooms_level": "remember/understand/apply"
         }}
     ],
     "notes": [
@@ -234,6 +323,7 @@ Schema:
     def generate_questions(self, payload: QuestionRequest) -> QuestionResponse:
         is_math = self._is_math_subject(payload.subject)
         bundle = self._retrieve(
+            "conceptual_qa",
             payload.class_num,
             payload.subject,
             payload.chapter,
@@ -248,7 +338,7 @@ Schema:
                 not_in_textbook=True,
             )
 
-        context = self._format_context(bundle.documents)
+        context = self._format_structured_context(bundle.structured_context, "Conceptual study questions")
         math_instruction = (
             "For Mathematics, generate mostly problem-solving questions from chapter exercises (about 70%) and keep the rest concept-based (about 30%)."
             if is_math
@@ -256,49 +346,44 @@ Schema:
         )
         prompt = f"""{SYSTEM_PROMPT}
 
-Create exactly {payload.count} important study questions with answers from the provided NCERT context.
+{CONCEPTUAL_QA_PROMPT.format(context=context)}
 
-Official NCERT textbook context:
-{context}
-
-Instructions:
-1. Use ONLY the provided context.
-2. PRIORITY ORDER:
+Additional instructions:
+1. Create exactly {payload.count} questions.
+2. Prioritize:
      a) End-of-chapter exercises
      b) Important definitions
      c) Concept explanations
-     d) Examples and applications
+     d) Examples abstracted into new conceptual scenarios
 3. Do not invent questions unsupported by context.
-4. Questions should test:
-     - understanding
-     - application
-     - reasoning
-     - concept clarity
-5. Avoid duplicate or trivial questions.
-6. Answers must be concise but complete.
-7. Explanations should improve conceptual understanding.
-8. Difficulty distribution:
+4. Answers must be concise but complete.
+5. Explanations should improve conceptual understanding.
+6. Difficulty distribution:
      - 40% easy
      - 40% medium
      - 20% hard
-9. For Mathematics:
+7. For Mathematics:
      - 70% problem-solving
      - 30% conceptual
-     - include step-by-step solutions when needed
-10. Preserve formulas and units exactly.
+     - include step-by-step reasoning when needed
+8. Preserve formulas and units exactly.
+9. Set type to conceptual, application, reasoning, compare and contrast, problem-solving, or HOTS as appropriate.
+10. Keep blooms_level aligned with the cognitive demand.
 
 {math_instruction}
 
 Return STRICT valid JSON only.
 
-Schema:
+If you need a schema reminder, use:
 {{
     "questions": [
         {{
             "question": "Question text",
             "answer": "Correct answer",
             "explanation": "Concept explanation",
-            "difficulty": "easy|medium|hard"
+            "difficulty": "easy|medium|hard",
+            "type": "conceptual/application/HOTS",
+            "blooms_level": "understand/apply/analyze"
         }}
     ],
     "notes": [
@@ -325,6 +410,7 @@ Schema:
     def generate_quiz(self, payload: QuizRequest) -> QuizResponse:
         is_math = self._is_math_subject(payload.subject)
         bundle = self._retrieve(
+            "mcq",
             payload.class_num,
             payload.subject,
             payload.chapter,
@@ -340,7 +426,7 @@ Schema:
                 not_in_textbook=True,
             )
 
-        context = self._format_context(bundle.documents)
+        context = self._format_structured_context(bundle.structured_context, "MCQ generation")
         math_instruction = (
             "For Mathematics, include mostly numerical/problem-solving items from exercises (about 70%) and the rest concept-based questions (about 30%)."
             if is_math
@@ -349,9 +435,61 @@ Schema:
         # Force MCQ-only generation for all subjects
         prompt = f"""{SYSTEM_PROMPT}
 
+You are an NCERT educational assessment expert.
+
+Generate HIGH-QUALITY concept-based MCQs for school students.
+
+STRICT RULES:
+
+1. Questions must test conceptual understanding.
+2. Do NOT copy textbook lines directly.
+3. Do NOT generate story-based questions.
+4. Avoid questions based only on textbook examples.
+5. Convert examples into generalized concepts.
+6. Questions must be educationally meaningful.
+7. Avoid vague questions.
+8. Avoid repetitive questions.
+9. Distractors must be realistic and educationally valid.
+10. Wrong options should reflect common student mistakes.
+11. Questions should align with Bloom taxonomy.
+12. Use age-appropriate language.
+
+FOR MATH:
+Distractors should include:
+- sign mistakes
+- operation mistakes
+- formula misuse
+- common misconceptions
+
+FOR SCIENCE:
+Distractors should include:
+- conceptual confusion
+- incorrect processes
+- wrong scientific reasoning
+
+FOR SOCIAL:
+Focus on:
+- cause-effect
+- understanding
+- analysis
+- chronology
+
+FOR ENGLISH:
+Focus on:
+- grammar concepts
+- comprehension
+- vocabulary usage
+- writing logic
+
+AVOID:
+- random options
+- meaningless numbers
+- trivial factual recall
+- textbook sentence copying
+
 Create exactly {payload.count} multiple-choice questions from the provided NCERT context.
 
-Official NCERT textbook context:
+Structured NCERT educational context:
 {context}
 
 Difficulty level:
@@ -359,26 +497,29 @@ Difficulty level:
 
 Instructions:
 1. Use ONLY the provided NCERT context.
-2. Priority source:
-     - end-of-chapter exercises
-     - key concepts
-     - definitions
-     - examples
+2. Prioritize key concepts, definitions, formulas, rules, and conceptual applications.
 3. Do NOT copy textbook questions verbatim.
 4. Convert textbook ideas into assessment-style MCQs.
-5. Every question must:
+5. If examples are present, abstract the underlying concept instead of testing the example itself.
+6. Every question must:
      - test understanding
      - have exactly 4 options
      - contain only 1 correct answer
-6. Distractors should be believable but clearly incorrect.
-7. Avoid ambiguous wording.
-8. Explanations must justify why the correct answer is right.
-9. Maintain NCERT terminology.
-10. For Mathematics:
-     - prioritize numerical/problem-solving MCQs
-     - preserve formulas exactly
-11. Difficulty distribution should match:
-     {payload.difficulty}
+7. Distractors should be believable, realistic, and reflect common student mistakes.
+8. Avoid ambiguous wording and trivial recall-only questions.
+9. Explanations must justify why the correct answer is right.
+10. Maintain NCERT terminology and simple school-level English.
+11. For Mathematics:
+     - prioritize concept-based and application-based MCQs
+     - include distractors based on sign mistakes, operation mistakes, formula misuse, and misconceptions
+12. For Science:
+     - include distractors based on conceptual confusion, wrong process order, and incorrect reasoning
+13. For Social Science:
+     - emphasize cause-effect, chronology, understanding, and analysis
+14. For English:
+     - emphasize grammar concepts, comprehension, vocabulary usage, and writing logic
+15. Bloom levels should be one of: remember, understand, apply, analyze.
+16. Choose the difficulty label carefully so it matches the cognitive demand.
 
 {math_instruction}
 
@@ -391,15 +532,16 @@ Schema:
         {{
             "question": "Question text",
             "question_type": "mcq",
-            "options": [
-                {{"label": "A", "text": "Option A"}},
-                {{"label": "B", "text": "Option B"}},
-                {{"label": "C", "text": "Option C"}},
-                {{"label": "D", "text": "Option D"}}
-            ],
+            "options": {{
+                "A": "Option A",
+                "B": "Option B",
+                "C": "Option C",
+                "D": "Option D"
+            }},
             "correct_answer": "A",
             "explanation": "Why the answer is correct",
-            "difficulty": "easy|medium|hard"
+            "difficulty": "easy|medium|hard",
+            "blooms_level": "remember|understand|apply|analyze"
         }}
     ],
     "notes": [
@@ -445,6 +587,7 @@ Schema:
 
     def summarize_chapter(self, class_num: int, subject: str | None, chapter: str | None, top_k: int) -> ChatResponse:
         bundle = self._retrieve(
+            "summary",
             class_num,
             subject,
             chapter,
@@ -460,10 +603,13 @@ Schema:
                 source_scope=bundle.scope,
             )
 
-        context = self._format_context(bundle.documents)
+        context = self._format_structured_context(bundle.structured_context, "Chapter summary")
         prompt = CHAPTER_SUMMARY_PROMPT.format(context=context)
         try:
-            summary = self.chat_model.invoke(prompt).content.strip()
+            summary_payload = self._invoke_json(prompt, timeout_seconds=20)
+            summary = self._format_summary_response(summary_payload)
+            if not summary.strip():
+                summary = self.chat_model.invoke(prompt).content.strip()
         except Exception as exc:
             summary = f"The provided NCERT context does not contain enough information. {exc}"
 
@@ -478,48 +624,41 @@ Schema:
             source_scope=bundle.scope,
         )
 
-    def _retrieve(self, class_num: int, subject: str | None, chapter: str | None, query: str, top_k: int) -> RetrievedBundle:
-        metadata_filter: dict[str, object] = {"class_num": class_num}
-        if subject:
-            metadata_filter["subject"] = normalize_key(subject)
-        if chapter:
-            metadata_filter["chapter"] = normalize_key(chapter)
+    def _retrieve(self, task_type: str, class_num: int, subject: str | None, chapter: str | None, query: str, top_k: int) -> RetrievedBundle:
+        documents, citations, structured_context, scope, not_in_textbook = self.retrieval_pipeline.retrieve(
+            task_type=task_type,
+            query=query,
+            class_num=class_num,
+            subject=subject,
+            chapter=chapter,
+            top_k=top_k,
+        )
+        return RetrievedBundle(
+            documents=documents,
+            citations=citations,
+            structured_context={
+                "concepts": structured_context.concepts,
+                "definitions": structured_context.definitions,
+                "formulae": structured_context.formulae,
+                "applications": structured_context.applications,
+                "misconceptions": structured_context.misconceptions,
+                "learning_objectives": structured_context.learning_objectives,
+            },
+            scope=scope,
+            not_in_textbook=not_in_textbook,
+        )
 
-        results = self.vectorstore.similarity_search_with_scores(query, k=top_k, filter=metadata_filter)
-        documents: list[Document] = []
-        citations: list[SourceCitation] = []
-        for document, score in results:
-            documents.append(document)
-            citations.append(self._citation_from_document(document, score))
-
-        best_score = max((score for _, score in results), default=0.0)
-        not_in_textbook = best_score < self.settings.answer_relevance_threshold
-        scope_bits = [f"class {class_num}"]
-        if subject:
-            scope_bits.append(normalize_key(subject))
-        if chapter:
-            scope_bits.append(normalize_key(chapter))
-
-        return RetrievedBundle(documents=documents, citations=citations, scope=" / ".join(scope_bits), not_in_textbook=not_in_textbook)
-
-    def _format_context(self, documents: list[Document]) -> str:
-        blocks = []
-        for index, document in enumerate(documents, start=1):
-            metadata = document.metadata
-            title_bits = [str(metadata.get("file_name", "unknown source"))]
-            if metadata.get("subject"):
-                title_bits.append(f"subject={metadata['subject']}")
-            if metadata.get("chapter"):
-                title_bits.append(f"chapter={metadata['chapter']}")
-            if metadata.get("topic"):
-                title_bits.append(f"topic={metadata['topic']}")
-            if metadata.get("exercise_section"):
-                title_bits.append(f"exercise_section={metadata['exercise_section']}")
-            if metadata.get("page") is not None:
-                title_bits.append(f"page={metadata['page']}")
-            header = "; ".join(title_bits)
-            blocks.append(f"[{index}] {header}\n{document.page_content.strip()}")
-        return "\n\n".join(blocks)
+    def _format_structured_context(self, structured_context: dict[str, list[str]], focus: str) -> str:
+        ordered_context = {
+            "focus": focus,
+            "concepts": structured_context.get("concepts", []),
+            "definitions": structured_context.get("definitions", []),
+            "formulae": structured_context.get("formulae", []),
+            "applications": structured_context.get("applications", []),
+            "misconceptions": structured_context.get("misconceptions", []),
+            "learning_objectives": structured_context.get("learning_objectives", []),
+        }
+        return json.dumps(ordered_context, ensure_ascii=True, indent=2)
 
     def _format_history(self, messages: list[ChatMessage]) -> str:
         if not messages:
@@ -550,22 +689,6 @@ Schema:
             return json.loads(payload)
         except json.JSONDecodeError:
             return {}
-
-    def _citation_from_document(self, document: Document, score: float) -> SourceCitation:
-        metadata = document.metadata
-        return SourceCitation(
-            source_path=str(metadata.get("source_path", "")),
-            file_name=str(metadata.get("file_name", "")),
-            class_num=self._safe_int(metadata.get("class_num")),
-            subject=str(metadata.get("subject", "")) or None,
-            chapter=str(metadata.get("chapter", "")) or None,
-            page=self._safe_int(metadata.get("page")),
-            chunk_id=self._safe_int(metadata.get("chunk_id")),
-            relevance_score=float(score),
-            excerpt=document.page_content[:350].strip(),
-            topic=str(metadata.get("topic", "")) or None,
-            exercise_section=str(metadata.get("exercise_section", "")) or None,
-        )
 
     def _coerce_quiz_item(self, item: dict, default_type: str, default_difficulty: str) -> QuizItem:
         question_type = self._normalize_question_type(item.get("question_type"), default_type)
@@ -621,17 +744,49 @@ Schema:
 
     def _coerce_question_item(self, item: dict) -> QuestionItem:
         difficulty = self._normalize_difficulty(item.get("difficulty"), "medium")
+        question_type = str(item.get("type") or item.get("question_type") or "conceptual").strip()
+        blooms_level = self._normalize_blooms_level(item.get("blooms_level"), "understand")
         return QuestionItem(
             question=str(item.get("question", "")).strip(),
             answer=str(item.get("answer", "")).strip(),
             explanation=str(item.get("explanation", "")).strip(),
             difficulty=difficulty,
+            type=question_type,
+            blooms_level=blooms_level,
         )
+
+    def _format_summary_response(self, summary_payload: dict) -> str:
+        if not summary_payload:
+            return ""
+        chapter_summary = str(summary_payload.get("chapter_summary", "")).strip()
+        key_concepts = self._ensure_list(summary_payload.get("key_concepts"))
+        important_formulas = self._ensure_list(summary_payload.get("important_formulas"))
+        common_mistakes = self._ensure_list(summary_payload.get("common_mistakes"))
+        exam_points = self._ensure_list(summary_payload.get("exam_points"))
+
+        blocks: list[str] = []
+        if chapter_summary:
+            blocks.append(chapter_summary)
+        if key_concepts:
+            blocks.append("Key concepts:\n- " + "\n- ".join(key_concepts))
+        if important_formulas:
+            blocks.append("Important formulas:\n- " + "\n- ".join(important_formulas))
+        if common_mistakes:
+            blocks.append("Common mistakes:\n- " + "\n- ".join(common_mistakes))
+        if exam_points:
+            blocks.append("Exam points:\n- " + "\n- ".join(exam_points))
+        return "\n\n".join(blocks).strip()
 
     def _normalize_difficulty(self, value: object, fallback: str) -> str:
         candidate = str(value or fallback).strip().lower()
         if candidate not in {"easy", "medium", "hard"}:
             return "medium"
+        return candidate
+
+    def _normalize_blooms_level(self, value: object, fallback: str) -> str:
+        candidate = str(value or fallback).strip().lower()
+        if candidate not in {"understand", "apply", "analyze"}:
+            return "understand"
         return candidate
 
     def _normalize_question_type(self, value: object, fallback: str) -> str:
@@ -657,6 +812,8 @@ Schema:
                     answer=answer_text,
                     explanation=explanation,
                     difficulty="medium",
+                    type="application" if is_math else "conceptual",
+                    blooms_level="apply" if is_math else "understand",
                 )
             )
 
@@ -671,6 +828,8 @@ Schema:
                     answer=line,
                     explanation="Grounded in the selected chapter context.",
                     difficulty="easy",
+                    type="conceptual",
+                    blooms_level="understand",
                 )
             )
         return questions[:count]
@@ -686,6 +845,9 @@ Schema:
                     front=self._trim_text(question_text, 140),
                     back=self._trim_text(answer_text, 180),
                     explanation="Based on the selected NCERT chapter context.",
+                    type="application",
+                    difficulty="medium",
+                    blooms_level="apply",
                 )
             )
 
@@ -699,6 +861,9 @@ Schema:
                     front=f"What is the key idea in this NCERT line: {self._trim_text(line, 100)}?",
                     back=self._trim_text(line, 180),
                     explanation="This card was generated directly from the retrieved textbook context.",
+                    type="concept",
+                    difficulty="easy",
+                    blooms_level="understand",
                 )
             )
 
@@ -725,6 +890,7 @@ Schema:
                     correct_answer=correct_answer,
                     explanation="Based on the end-of-chapter exercise section in the selected NCERT chapter.",
                     difficulty=self._normalize_difficulty(difficulty, "medium"),
+                    blooms_level="apply" if question_type == "mcq" else "understand",
                 )
             )
 
@@ -744,6 +910,7 @@ Schema:
                     correct_answer="A",
                     explanation="Grounded in the selected chapter context.",
                     difficulty=self._normalize_difficulty(difficulty, "medium"),
+                    blooms_level="understand",
                 )
             )
         return questions[:count]
@@ -832,18 +999,16 @@ Schema:
         if not text:
             return True
         lowered = text.strip().lower()
-        placeholders = [
-            "enter",
-            "your answer",
-            "type",
-            "option",
-            "write",
-            "fill",
-        ]
-        # treat very short generic labels as placeholders too
         if len(lowered) < 3:
             return True
-        return any(p in lowered for p in placeholders)
+        placeholder_patterns = [
+            r"^option\s*[a-d1-4]?$",
+            r"^enter(?:\s+your)?\s+answer$",
+            r"^type(?:\s+your)?\s+answer$",
+            r"^write(?:\s+your)?\s+answer$",
+            r"^fill(?:\s+in)?(?:\s+the)?(?:\s+blank)?$",
+        ]
+        return any(re.match(pattern, lowered) for pattern in placeholder_patterns)
 
     def _mutate_text(self, text: str) -> str:
         t = text.strip()
@@ -1163,6 +1328,7 @@ Schema:
                             correct_answer="A",
                             explanation=q.explanation or "",
                             difficulty=q.difficulty or "medium",
+                            blooms_level=getattr(q, "blooms_level", "understand") or "understand",
                         )
                         enforced.append(enforced_q)
                     else:
@@ -1174,6 +1340,7 @@ Schema:
                             correct_answer=q.correct_answer,
                             explanation=q.explanation or "",
                             difficulty=q.difficulty or "medium",
+                            blooms_level=getattr(q, "blooms_level", "understand") or "understand",
                         ))
             except Exception:
                 # If anything fails, try to keep the question as MCQ at least
@@ -1185,6 +1352,7 @@ Schema:
                         correct_answer=q.correct_answer,
                         explanation=q.explanation or "",
                         difficulty=q.difficulty or "medium",
+                        blooms_level=getattr(q, "blooms_level", "understand") or "understand",
                     ))
                 except:
                     pass

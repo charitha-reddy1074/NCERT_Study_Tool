@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from langchain_core.documents import Document
 from uuid import uuid4
 from threading import RLock
 
@@ -69,6 +70,38 @@ class VectorStoreService:
     def similarity_search_with_scores(self, query: str, *, k: int, filter: dict | None = None):
         chroma_filter = self._to_chroma_filter(filter)
         return self._vectorstore.similarity_search_with_relevance_scores(query, k=k, filter=chroma_filter)
+
+    def list_documents(self, *, filter: dict | None = None, batch_size: int = 200) -> list[Document]:
+        chroma_filter = self._to_chroma_filter(filter)
+        documents: list[Document] = []
+        try:
+            total = self.count_documents()
+            if total <= 0:
+                return []
+
+            for offset in range(0, total, batch_size):
+                result = self._vectorstore._collection.get(
+                    where=chroma_filter,
+                    limit=batch_size,
+                    offset=offset,
+                    include=["documents", "metadatas"],
+                )
+                if not isinstance(result, dict):
+                    continue
+
+                page_documents = result.get("documents", []) or []
+                page_metadatas = result.get("metadatas", []) or []
+                for text, metadata in zip(page_documents, page_metadatas):
+                    documents.append(
+                        Document(
+                            page_content=str(text or ""),
+                            metadata=dict(metadata or {}),
+                        )
+                    )
+        except Exception:
+            return []
+
+        return documents
 
     def _to_chroma_filter(self, raw_filter: dict | None) -> dict | None:
         if not raw_filter:

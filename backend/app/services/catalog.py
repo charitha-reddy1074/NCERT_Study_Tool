@@ -13,7 +13,7 @@ DEFAULT_SUBJECTS = [
     ("science", "Science"),
     ("social-science", "Social Science"),
     ("english", "English"),
-    ("hindi", "Hindi"),
+    # ("hindi", "Hindi"),
 ]
 
 

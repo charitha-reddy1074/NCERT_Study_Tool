@@ -34,7 +34,7 @@ class SourceCitation(BaseModel):
     subject: str | None = None
     chapter: str | None = None
     page: int | None = None
-    chunk_id: int | None = None
+    chunk_id: str | None = None
     relevance_score: float | None = None
     excerpt: str | None = None
     topic: str | None = None
@@ -88,6 +88,9 @@ class FlashcardItem(BaseModel):
     front: str
     back: str
     explanation: str
+    type: Literal["definition", "concept", "formula", "application", "misconception"] = "concept"
+    difficulty: Literal["easy", "medium", "hard"] = "medium"
+    blooms_level: Literal["remember", "understand", "apply"] = "understand"
 
 
 class FlashcardResponse(BaseModel):
@@ -116,6 +119,34 @@ class QuestionItem(BaseModel):
     answer: str
     explanation: str
     difficulty: Literal["easy", "medium", "hard"] = "medium"
+    type: str = "conceptual"
+    blooms_level: Literal["understand", "apply", "analyze"] = "understand"
+
+class AssertionReasonRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    class_num: int = Field(default=6, ge=1, le=12)
+    subject: str | None = None
+    chapter: str | None = None
+    count: int = Field(default=8, ge=4, le=15)
+    top_k: int = Field(default=6, ge=1, le=12)
+
+
+class AssertionReasonItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assertion: str
+    reason: str
+    correct_option: Literal["A", "B", "C", "D"]
+    explanation: str
+
+
+class AssertionReasonResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assertion_reason_questions: list[AssertionReasonItem] = Field(default_factory=list)
+    citations: list[SourceCitation] = Field(default_factory=list)
+    not_in_textbook: bool = False
 
 
 class QuestionResponse(BaseModel):
@@ -155,6 +186,7 @@ class QuizItem(BaseModel):
     correct_answer: str
     explanation: str
     difficulty: Literal["easy", "medium", "hard"] = "medium"
+    blooms_level: Literal["remember", "understand", "apply", "analyze"] = "understand"
 
 
 class QuizResponse(BaseModel):
